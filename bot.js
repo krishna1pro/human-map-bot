@@ -3,41 +3,23 @@ const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
 
-// ── Catch unhandled errors in this process itself ────────────────────────────
-process.on("uncaughtException", (err) => {
-  console.error("💥 [uncaughtException]", err.message);
-  console.error(err.stack);
-  process.exit(1);
-});
-
-process.on("unhandledRejection", (reason) => {
-  console.error("💥 [unhandledRejection]", reason);
-  process.exit(1);
-});
-
 console.log("🚀 Starting OpenClaw Telegram bot engine...");
 
-// ── Log env vars that affect gateway startup ─────────────────────────────────
-console.log("🔑 TELEGRAM_BOT_TOKEN :", process.env.TELEGRAM_BOT_TOKEN ? "SET (length=" + process.env.TELEGRAM_BOT_TOKEN.length + ")" : "NOT SET ⚠️");
-console.log("🔑 EDGE_FUNCTION_URL  :", process.env.EDGE_FUNCTION_URL  || "NOT SET ⚠️");
-console.log("🔑 HOME               :", process.env.HOME || "(unset)");
-console.log("🔑 NODE_ENV           :", process.env.NODE_ENV || "(unset)");
-
-// ── Dummy server for platform keep-alive ─────────────────────────────────────
-const PORT = parseInt(process.env.PORT || "3000", 10);
+// Keep-alive server (Railway likes 8080 better than 7860 for non-HTTP services)
 const dummy = http.createServer((req, res) => {
   res.writeHead(200, { "Content-Type": "text/plain" });
   res.end("Bot alive");
 });
-dummy.listen(PORT, "0.0.0.0", () => console.log("🌐 Keep-alive server listening on port " + PORT));
+dummy.listen(8080, "0.0.0.0", () => console.log("Dummy server listening on port 8080"));
 
-// ── Write minimal OpenClaw config ────────────────────────────────────────────
+// Create .openclaw directory and minimal config
 const home = process.env.HOME || "/root";
 const configDir = path.join(home, ".openclaw");
 const configPath = path.join(configDir, "openclaw.json");
 
 fs.mkdirSync(configDir, { recursive: true });
 
+// Minimal config — safe and minimal
 const config = {
   gateway: {
     mode: "local",
@@ -51,62 +33,43 @@ const config = {
 };
 
 fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-console.log("📄 Config written to " + configPath);
-console.log("📄 Config contents:", JSON.stringify(config, null, 2));
+console.log("Config written to", configPath);
 
-// ── Resolve gateway binary ────────────────────────────────────────────────────
-const GW_BIN = "/usr/local/bin/openclaw";
-console.log("🔍 Gateway binary    :", GW_BIN);
-try {
-  fs.accessSync(GW_BIN, fs.constants.X_OK);
-  console.log("✅ Gateway binary exists and is executable");
-} catch (e) {
-  console.error("❌ Gateway binary check failed:", e.message);
+// Clean stale lock / pid file (very common cause of silent exit code 1)
+const lockPath = path.join(configDir, "gateway.pid");
+if (fs.existsSync(lockPath)) {
+  console.log("Removing stale gateway lock/pid file");
+  try {
+    fs.unlinkSync(lockPath);
+  } catch (err) {
+    console.warn("Could not remove lock file:", err.message);
+  }
 }
 
-// ── Spawn gateway ─────────────────────────────────────────────────────────────
-console.log("⚙️  Spawning gateway process...");
-const gw = spawn(GW_BIN, ["gateway"], {
-  env: process.env,          // pass full environment through
-  stdio: ["ignore", "pipe", "pipe"]
-});
+// Spawn gateway with --allow-unconfigured to bypass strict checks
+const args = ["gateway", "--allow-unconfigured"];
 
-console.log("⚙️  Gateway PID:", gw.pid);
+console.log("Spawning openclaw gateway with args:", args);
 
-// Capture every byte from stdout
+const gw = spawn("/usr/local/bin/openclaw", args);
+
+// Better logging — capture EVERYTHING
 gw.stdout.on("data", (data) => {
-  data.toString().split("\n").filter(Boolean).forEach((line) => {
-    console.log("  [gateway stdout]", line);
-  });
+  console.log("Gateway STDOUT:", data.toString().trim());
 });
 
-// Capture every byte from stderr
 gw.stderr.on("data", (data) => {
-  data.toString().split("\n").filter(Boolean).forEach((line) => {
-    console.error("  [gateway stderr]", line);
-  });
+  console.error("Gateway STDERR:", data.toString().trim());
 });
 
-// Catch spawn-level errors (e.g. binary not found, EACCES)
 gw.on("error", (err) => {
-  console.error("❌ Failed to spawn gateway:", err.message);
-  console.error("   code:", err.code, "| path:", err.path);
-  process.exit(1);
+  console.error("Gateway spawn ERROR:", err.message);
 });
-
-// ── Early-exit watchdog (5 s) ─────────────────────────────────────────────────
-let gatewayAlive = true;
-const watchdog = setTimeout(() => {
-  if (!gatewayAlive) return;
-  console.log("✅ Gateway survived the 5-second startup window — looks healthy");
-}, 5000);
 
 gw.on("close", (code, signal) => {
-  gatewayAlive = false;
-  clearTimeout(watchdog);
-  console.error("🛑 Gateway process exited — code:", code, "| signal:", signal);
-  if (code !== 0) {
-    console.error("   Non-zero exit. Check [gateway stderr] lines above for the root cause.");
-  }
-  process.exit(code != null ? code : 1);
+  console.log(`Gateway exited with code ${code}, signal ${signal}`);
+  // If it dies, exit container so Railway restarts
+  process.exit(code || 1);
 });
+
+console.log("Gateway process launched — PID should be visible next");
