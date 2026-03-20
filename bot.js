@@ -3,29 +3,27 @@ const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
 
-console.log("=== OpenClaw Telegram Bot - FINAL WORKING VERSION ===");
+console.log("=== OpenClaw Telegram Bot - FINAL LIGHT VERSION ===");
 console.log("Time:", new Date().toISOString());
-console.log("TELEGRAM_BOT_TOKEN:", process.env.TELEGRAM_BOT_TOKEN ? "SET (len " + process.env.TELEGRAM_BOT_TOKEN.length + ")" : "MISSING");
+console.log("TELEGRAM_BOT_TOKEN len:", process.env.TELEGRAM_BOT_TOKEN?.length || "MISSING");
 console.log("EDGE_FUNCTION_URL:", process.env.EDGE_FUNCTION_URL || "MISSING");
 console.log("GROQ_API_KEY:", process.env.GROQ_API_KEY ? "SET" : "MISSING");
 
-// 1. Dummy server on 8080 (Railway requirement)
+// Keep-alive on 8080
 const dummy = http.createServer((req, res) => {
   res.writeHead(200, { "Content-Type": "text/plain" });
-  res.end("Bot running");
+  res.end("Bot alive");
 });
-dummy.listen(8080, "0.0.0.0", () => console.log("[KEEP-ALIVE] Listening on 8080"));
+dummy.listen(8080, "0.0.0.0", () => console.log("[KEEP-ALIVE] Port 8080"));
 
-// 2. Config directory
+// Config - super minimal + loopback bind (less memory)
 const configDir = path.join(process.env.HOME || "/root", ".openclaw");
-const configPath = path.join(configDir, "openclaw.json");
 fs.mkdirSync(configDir, { recursive: true });
 
-// Minimal config - NO "providers" key
 const config = {
   gateway: {
     mode: "local",
-    bind: "lan"
+    bind: "loopback"  // safer, less memory than lan
   },
   channels: {
     telegram: {
@@ -34,42 +32,33 @@ const config = {
   }
 };
 
-fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-console.log("[CONFIG] Written to", configPath);
+fs.writeFileSync(path.join(configDir, "openclaw.json"), JSON.stringify(config, null, 2));
+console.log("[CONFIG] Minimal config written");
 
-// 3. Aggressive cleanup of stale files
-const staleFiles = [
+// Cleanup stale files
+const stale = [
   path.join(configDir, "gateway.pid"),
   path.join(configDir, "gateway.lock"),
-  path.join(configDir, "state.json"),
-  path.join(configDir, "telegram.state"),
-  path.join(configDir, "openclaw.lock"),
-  path.join(configDir, "credentials.json")
+  path.join(configDir, "state.json")
 ];
-
-staleFiles.forEach(file => {
-  if (fs.existsSync(file)) {
-    console.log("[CLEANUP] Deleting", file);
-    try { fs.unlinkSync(file); } catch (e) { console.warn(e.message); }
+stale.forEach(f => {
+  if (fs.existsSync(f)) {
+    console.log("[CLEANUP] Deleting", f);
+    try { fs.unlinkSync(f); } catch(e) {}
   }
 });
 
-// 4. Diagnostics
-console.log("[DIAG] --version...");
-const ver = spawn("/usr/local/bin/openclaw", ["--version"]);
-ver.stdout.on("data", d => console.log("[VER-STDOUT]", d.toString().trim()));
-ver.stderr.on("data", d => console.error("[VER-STDERR]", d.toString().trim()));
-ver.on("close", c => console.log("[VER-EXIT] code =", c));
+// Ensure /tmp is writable (Railway sometimes restricts)
+try {
+  fs.writeFileSync("/tmp/test.txt", "test");
+  console.log("[TMP] Writable");
+} catch (e) {
+  console.error("[TMP] Not writable:", e.message);
+}
 
-console.log("[DIAG] doctor...");
-const doc = spawn("/usr/local/bin/openclaw", ["doctor"]);
-doc.stdout.on("data", d => console.log("[DOC-STDOUT]", d.toString().trim()));
-doc.stderr.on("data", d => console.error("[DOC-STDERR]", d.toString().trim()));
-doc.on("close", c => console.log("[DOC-EXIT] code =", c));
-
-// 5. Launch gateway
-const args = ["gateway", "--allow-unconfigured"];
-console.log("[GATEWAY] Launching:", args.join(" "));
+// Launch gateway with low-memory flags
+const args = ["gateway", "--allow-unconfigured", "--no-browser"];
+console.log("[GATEWAY] Starting:", args.join(" "));
 
 const gw = spawn("/usr/local/bin/openclaw", args);
 
@@ -80,4 +69,4 @@ gw.on("close", (c, s) => {
   process.exit(c || 1);
 });
 
-console.log("[STARTUP] Waiting for gateway...");
+console.log("[STARTUP] Waiting...");
