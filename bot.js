@@ -3,21 +3,25 @@ const fs = require("fs");
 const path = require("path");
 const { spawn, execSync } = require("child_process");
 
-console.log("🚀 Starting OpenClaw Telegram bot engine...");
+console.log("=== OpenClaw Telegram Bot Engine Startup ===");
+console.log("Current time:", new Date().toISOString());
+console.log("HOME:", process.env.HOME || "/root");
+console.log("TELEGRAM_BOT_TOKEN length:", process.env.TELEGRAM_BOT_TOKEN ? process.env.TELEGRAM_BOT_TOKEN.length : "(not set)");
+console.log("EDGE_FUNCTION_URL:", process.env.EDGE_FUNCTION_URL || "(not set)");
 
 // ────────────────────────────────────────────────
-// 1. Keep-alive server (Railway prefers 8080 for background services)
+// 1. Keep-alive dummy server (Railway friendly port)
 // ────────────────────────────────────────────────
 const dummy = http.createServer((req, res) => {
   res.writeHead(200, { "Content-Type": "text/plain" });
-  res.end("Bot alive");
+  res.end("Bot is running");
 });
 dummy.listen(8080, "0.0.0.0", () => {
-  console.log("Dummy server listening on port 8080");
+  console.log("[KEEP-ALIVE] Listening on port 8080");
 });
 
 // ────────────────────────────────────────────────
-// 2. Create config directory & minimal safe config
+// 2. Directory & minimal config
 // ────────────────────────────────────────────────
 const home = process.env.HOME || "/root";
 const configDir = path.join(home, ".openclaw");
@@ -38,84 +42,79 @@ const config = {
 };
 
 fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-console.log("Config written to", configPath);
+console.log("[CONFIG] Written to:", configPath);
 
 // ────────────────────────────────────────────────
-// 3. Clean stale lock / pid file (very common cause of silent exit 1)
+// 3. Clean ALL possible stale files
 // ────────────────────────────────────────────────
-const lockPath = path.join(configDir, "gateway.pid");
-if (fs.existsSync(lockPath)) {
-  console.log("Removing stale gateway lock/pid file:", lockPath);
-  try {
-    fs.unlinkSync(lockPath);
-    console.log("Stale lock removed successfully");
-  } catch (err) {
-    console.warn("Could not remove lock file:", err.message);
+const staleFiles = [
+  path.join(configDir, "gateway.pid"),
+  path.join(configDir, "gateway.lock"),
+  path.join(configDir, "state.json"),
+  path.join(configDir, "telegram.state"),
+  path.join(configDir, "openclaw.lock")
+];
+
+staleFiles.forEach(file => {
+  if (fs.existsSync(file)) {
+    console.log("[CLEANUP] Removing stale file:", file);
+    try {
+      fs.unlinkSync(file);
+      console.log("[CLEANUP] Success:", file);
+    } catch (err) {
+      console.warn("[CLEANUP] Failed:", file, err.message);
+    }
   }
-}
-
-// ────────────────────────────────────────────────
-// 4. Diagnostic: test if the openclaw binary is runnable at all
-// ────────────────────────────────────────────────
-console.log("Testing openclaw binary with --version...");
-const versionTest = spawn("/usr/local/bin/openclaw", ["--version"]);
-
-versionTest.stdout.on("data", (data) => {
-  console.log("openclaw --version output:", data.toString().trim());
-});
-
-versionTest.stderr.on("data", (data) => {
-  console.error("openclaw --version STDERR:", data.toString().trim());
-});
-
-versionTest.on("error", (err) => {
-  console.error("Failed to spawn openclaw binary:", err.message);
-});
-
-versionTest.on("close", (code, signal) => {
-  console.log(`openclaw --version exited with code ${code}, signal ${signal}`);
 });
 
 // ────────────────────────────────────────────────
-// Optional: Force reinstall openclaw (uncomment only if --version fails)
+// 4. Diagnostic 1: openclaw --version
 // ────────────────────────────────────────────────
+console.log("[DIAG] Testing openclaw binary --version...");
+const ver = spawn("/usr/local/bin/openclaw", ["--version"]);
+
+ver.stdout.on("data", d => console.log("[VERSION-STDOUT]", d.toString().trim()));
+ver.stderr.on("data", d => console.error("[VERSION-STDERR]", d.toString().trim()));
+ver.on("error", err => console.error("[VERSION-SPAWN-ERROR]", err.message));
+ver.on("close", code => console.log("[VERSION-EXIT]", "code =", code));
+
+// ────────────────────────────────────────────────
+// 5. Diagnostic 2: openclaw doctor
+// ────────────────────────────────────────────────
+console.log("[DIAG] Running openclaw doctor...");
+const doctor = spawn("/usr/local/bin/openclaw", ["doctor"]);
+
+doctor.stdout.on("data", d => console.log("[DOCTOR-STDOUT]", d.toString().trim()));
+doctor.stderr.on("data", d => console.error("[DOCTOR-STDERR]", d.toString().trim()));
+doctor.on("error", err => console.error("[DOCTOR-SPAWN-ERROR]", err.message));
+doctor.on("close", code => console.log("[DOCTOR-EXIT]", "code =", code));
+
+// ────────────────────────────────────────────────
+// Optional: Force reinstall (uncomment if --version or doctor fails)
+// ────────────────────────────────────────────────
+// console.log("[REINSTALL] Force reinstalling openclaw...");
 // try {
-//   console.log("Force reinstalling openclaw...");
 //   execSync("npm install -g openclaw@latest --force", { stdio: "inherit" });
-//   console.log("Reinstall finished");
-// } catch (err) {
-//   console.error("Reinstall failed:", err.message);
+//   console.log("[REINSTALL] Done");
+// } catch (e) {
+//   console.error("[REINSTALL] Failed:", e.message);
 // }
 
 // ────────────────────────────────────────────────
-// 5. Launch gateway with bypass flags
+// 6. Launch gateway
 // ────────────────────────────────────────────────
 const gatewayArgs = ["gateway", "--allow-unconfigured"];
 
-console.log("Launching openclaw gateway with args:", gatewayArgs);
+console.log("[GATEWAY] Launching with args:", gatewayArgs);
 
 const gw = spawn("/usr/local/bin/openclaw", gatewayArgs);
 
-// ────────────────────────────────────────────────
-// Capture ALL output
-// ────────────────────────────────────────────────
-gw.stdout.on("data", (data) => {
-  console.log("Gateway STDOUT:", data.toString().trim());
-});
-
-gw.stderr.on("data", (data) => {
-  console.error("Gateway STDERR:", data.toString().trim());
-});
-
-gw.on("error", (err) => {
-  console.error("Gateway spawn failed:", err.message);
-  process.exit(1);
-});
-
+gw.stdout.on("data", d => console.log("[GATEWAY-STDOUT]", d.toString().trim()));
+gw.stderr.on("data", d => console.error("[GATEWAY-STDERR]", d.toString().trim()));
+gw.on("error", err => console.error("[GATEWAY-SPAWN-ERROR]", err.message));
 gw.on("close", (code, signal) => {
-  console.log(`Gateway exited with code ${code}, signal ${signal}`);
-  // Exit container so Railway restarts it
+  console.log("[GATEWAY-EXIT]", `code = ${code}, signal = ${signal}`);
   process.exit(code || 1);
 });
 
-console.log("Gateway spawn command issued — waiting for output...");
+console.log("[STARTUP] All checks done — waiting for gateway output...");
